@@ -35,9 +35,11 @@ def curve(st, window, now=None, points=220):
     fut = max(window * 0.2, min(window * 0.5, to_next + 1))
     t0, t1 = now - dt.timedelta(days=window - fut), now + dt.timedelta(days=fut)
     past_doses = [d for d in st["doses"] if d["t"] <= now]
+    if past_doses:  # a new user's first weeks: start the axis just before the first dose instead of drawing a month of flat zero
+        t0 = max(t0, min(min(d["t"] for d in past_doses) - dt.timedelta(days=3), now - dt.timedelta(days=7)))
     iv = dt.timedelta(days=st["interval_days"])
     extra, t = [], nxt
-    while t <= t1:
+    while st["scheduled"] and t <= t1:  # no schedule given: project the decay only, never invent future doses
         extra.append(dict(t=t, mg=st["last"]["mg"]))
         t += iv
     step = max(0.5, window * 24 / points)
@@ -80,9 +82,10 @@ def level_svg(st, window, w=432, h=216, now=None):
     yn = py(cur)
     s.append(f'<line x1="{xn:.1f}" x2="{xn:.1f}" y1="{yn:.1f}" y2="{base:.1f}" stroke="{TEXT}" stroke-opacity=".28" stroke-dasharray="2 4"/>')
     s.append(f'<circle cx="{xn:.1f}" cy="{yn:.1f}" r="6.5" fill="{c}" stroke="{BG}" stroke-width="2.5"/>')
-    anchor = "end" if xn > w - 84 else ("start" if xn < L + 60 else "middle")
-    cx = xn + (8 if anchor == "end" else -8 if anchor == "start" else 0)
-    cy = max(yn - 36, 18)
+    rising = len(past_doses) <= 1 and max(v for _, v in futs) > cur * 1.03  # first dose only: the dashed curve climbs right of the dot, keep the label on its left
+    anchor = "end" if (xn > w - 84 or rising) else ("start" if xn < L + 60 else "middle")
+    cx = xn + (-12 if rising and anchor == "end" and xn <= w - 84 else 8 if anchor == "end" else -8 if anchor == "start" else 0)
+    cy = max(yn - (14 if rising else 36), 18)
     s.append(f'<text x="{cx:.1f}" y="{cy:.1f}" text-anchor="{anchor}" font-size="22" font-weight="600" fill="{TEXT}" style="font-family:\'SwDisplay\',sans-serif;font-stretch:100%">{cur:.2f} mg</text>'
              f'<text x="{cx:.1f}" y="{cy + 16:.1f}" text-anchor="{anchor}" font-size="12" fill="{TEXT2}">Now, {short_time(now)}</text>')
     d0 = dt.datetime.combine(t0.date() + dt.timedelta(days=1), dt.time(0, 0))
@@ -187,14 +190,14 @@ def treatment_html(data, day, units, window=30, compound=None, coach_text=None, 
     nh = round(size * .78)
     sub = f'{st["brand"]} \u00b7 ' if st["brand"] else ""
     top = (f'<div style="display:flex;justify-content:space-between;align-items:center;height:32px"><div style="display:flex;align-items:baseline;gap:8px">'
-           f'<span style="font-size:20px;line-height:24px;font-weight:600">{st["label"]}</span><span class="lab">{sub}{last["mg"]:g} mg {cadence(st["interval_days"])}</span></div>'
+           f'<span style="font-size:20px;line-height:24px;font-weight:600">{st["label"]}</span><span class="lab">{sub}{last["mg"]:g} mg{(" " + cadence(st["interval_days"])) if st["scheduled"] else ""}</span></div>'
            f'{toggle(window)}</div>')
     hero = (f'<div class="lab" style="height:20px;margin-top:{SP["m"]}px">Estimated level now</div>'
             f'<div style="display:flex;align-items:baseline;gap:8px;margin-top:{SP["s"]}px;height:{nh}px"><span class="hero" style="font-size:{size}px;line-height:{nh}px;color:{TEXT}">{st["level_now"]:.2f}</span>'
             f'<span class="disp" style="font-size:28px;color:{TEXT2};font-weight:600">mg</span></div>')
     chart = f'<div style="margin-top:{SP["m"]}px">{level_svg(st, window, now=now)}</div>'
-    legend = (f'<div class="sm" style="display:flex;gap:{SP["m"]}px;margin-top:{SP["s"]}px;color:{TEXT2}"><span>Solid: estimated so far</span><span>Dashed: if the schedule is kept</span></div>')
-    stats = (f'<div style="display:flex;gap:{SP["m"]}px;margin-top:{SP["m"]}px">'
+    legend = (f'<div class="sm" style="display:flex;gap:{SP["m"]}px;margin-top:{SP["s"]}px;color:{TEXT2}"><span>Solid: estimated so far</span><span>{"Dashed: if the schedule is kept" if st["scheduled"] else "Dashed: fading, if no further dose"}</span></div>')
+    stats = "" if not st["scheduled"] else (f'<div style="display:flex;gap:{SP["m"]}px;margin-top:{SP["m"]}px">'
              f'{R.stat_col("At next dose", f"{st["level_next"]:.2f}", "mg")}{R.stat_col("Steady-state high", f"{st["ss_peak"]:.1f}", "mg")}'
              f'{R.stat_col("Steady-state low", f"{st["ss_trough"]:.1f}", "mg")}</div>')
     # last dose and next dose
@@ -207,10 +210,16 @@ def treatment_html(data, day, units, window=30, compound=None, coach_text=None, 
             f'<div style="margin-top:{SP["m"]}px;font-size:16px;line-height:24px;font-weight:500">{st["label"]}{(", " + st["brand"]) if st["brand"] else ""}</div>'
             f'<div class="lab">{fmt_when(last["t"])}</div>'
             f'<div class="lab">{last["site_label"] or "Site not logged"}</div></div>')
-    right = (f'<div style="width:176px;flex:none;padding-left:{SP["l"]}px;border-left:1px solid {HAIR}"><div class="lab" style="height:20px">Next dose</div>'
-             f'<div style="position:relative;width:112px;height:112px;margin-top:{SP["s"]}px">{ring(112, 12, prog, "medication")}{ring_inner}</div>'
-             f'<div style="margin-top:{SP["m"]}px;font-size:16px;line-height:24px;font-weight:500">{nxt["t"].strftime("%a, %b %-d")}</div>'
-             f'<div class="lab">{short_time(nxt["t"])}</div></div>')
+    panel = f'<div style="width:176px;flex:none;padding-left:{SP["l"]}px;border-left:1px solid {HAIR}"><div class="lab" style="height:20px">Next dose</div>'
+    if st["scheduled"]:
+        right = (f'{panel}<div style="position:relative;width:112px;height:112px;margin-top:{SP["s"]}px">{ring(112, 12, prog, "medication")}{ring_inner}</div>'
+                 f'<div style="margin-top:{SP["m"]}px;font-size:16px;line-height:24px;font-weight:500">{nxt["t"].strftime("%a, %b %-d")}</div>'
+                 f'<div class="lab">{short_time(nxt["t"])}</div></div>')
+    else:  # no schedule given: no date, no countdown, just a calm empty ring and what to do about it
+        right = (f'{panel}<div style="position:relative;width:112px;height:112px;margin-top:{SP["s"]}px">{ring(112, 12, 0, "medication")}'
+                 f'<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center"><span class="disp" style="font-size:30px;color:{TEXT3}">\u2013</span></div></div>'
+                 f'<div style="margin-top:{SP["m"]}px;font-size:16px;line-height:24px;font-weight:500">Not set yet</div>'
+                 f'<div class="lab">Tell me your schedule</div></div>')
     dose_block = f'<div style="display:flex;margin-top:{SP["xl"]}px;padding-top:{SP["l"]}px;border-top:1px solid {HAIR}">{left}{right}</div>'
     # injection site
     used = {d["site"] for d in st["all_doses"][-8:]}
@@ -228,4 +237,4 @@ def treatment_html(data, day, units, window=30, compound=None, coach_text=None, 
             f'<div style="margin-top:{SP["s"]}px;border-top:1px solid {HAIR}">{"".join(effect_row(e) for e in eff)}</div>')
     import render_modules as RMOD
     body = (f'{RMOD.nav("peptides")}<div style="margin-top:{SP["m"]}px">{top}</div>{hero}{chart}{legend}{stats}<div style="margin-top:{SP["l"]}px">{R.coach(line)}</div>{dose_block}{sites}{effs}')
-    return page_html(R.frame(body, day.strftime("%a, %b %-d"), R.streak_of(data, day), R.foot_time(day, "Treatment") + " \u00b7 Estimated", fixed=False))
+    return page_html(R.frame(body, day.strftime("%a, %b %-d"), R.streak_of(data, day), R.foot_time(day, "Peptides and meds") + " \u00b7 Estimated", fixed=False))

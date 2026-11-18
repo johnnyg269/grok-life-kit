@@ -151,6 +151,9 @@ def coach_line(data, day, kind, units=None, now=None, extra=None):
         h = None if "health" in _off(data) else data.sleep.get(day)
         if h is not None and h < t["sleep_goal_h"] - 1.0:
             return "Sleep was short. Keep today light and hit your protein."
+        y = day - dt.timedelta(1)
+        if p["recovery"] is not None and all(fn(data, y) is None for fn in (nutrition_score, hydration_score, activity_score)):
+            return "Based on last night's sleep alone for now. It gets sharper with each day you log."
         if p["recovery"] is not None and p["recovery"] >= 67 and not _sessions(data, day):
             return "Well recovered. Good day for a hard session."
         if p["recovery"] is None and f["cal"] == 0:

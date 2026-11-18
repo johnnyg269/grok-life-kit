@@ -25,7 +25,7 @@ type Activity = {
 };
 type Health = {
   recovery: { value: number | null; state: string; coach: string };
-  sleep: { labels: string[]; values: number[]; avg: number; last: number | null; goal: number; pct: number | null } | null;
+  sleep: { labels: string[]; values: number[]; avg: number; n: number; last: number | null; goal: number; pct: number | null } | null;
   weight: Weight | null;
   water: { labels: string[]; values: number[]; unit: string; today: string; goal: number; pct: number | null } | null;
 };
@@ -33,7 +33,7 @@ type Treatment = {
   compound: string; brand: string; cadence: string;
   levelNow: number; levelNext: number; ssHigh: number; ssLow: number;
   lastMg: string; lastWhen: string; lastSite: string; lastSiteKey: string;
-  nextWhen: string; nextCountdown: string; nextSite: string; nextSiteKey: string; elapsed: number;
+  scheduled: boolean; nextWhen: string; nextCountdown: string; nextSite: string; nextSiteKey: string; elapsed: number;
   past: [number, number][]; future: [number, number][]; doseX: number[]; nowX: number; ticks: [number, number | string][];
   effects: Ring[];
   coach: string;
@@ -420,13 +420,13 @@ export default function App() {
       {h && tile("health", <div>
           {trio([
             ...(h.sleep && h.sleep.last !== null ? [{ label: "Sleep", value: h.sleep.last.toFixed(1), unit: "h", sub: (h.sleep.pct ?? 0) + "% of goal", frac: (h.sleep.pct ?? 0) / 100, color: cSleep }] : []),
-            ...(h.weight && h.weight.current !== null ? [{ label: "Weight", value: h.weight.current.toFixed(1), unit: h.weight.unit, sub: h.weight.change === null ? "steady" : (h.weight.change < 0 ? "down " : "up ") + Math.abs(h.weight.change).toFixed(1) + " in " + h.weight.labels.length + " days", color: ink }] : []),
+            ...(h.weight && h.weight.current !== null ? [{ label: "Weight", value: h.weight.current.toFixed(1), unit: h.weight.unit, sub: h.weight.change === null ? "first weigh-in" : (h.weight.change < 0 ? "down " : "up ") + Math.abs(h.weight.change).toFixed(1) + " in " + h.weight.labels.length + " days", color: ink }] : []),
             ...(h.water ? [{ label: "Water", value: h.water.today, unit: h.water.unit, sub: (h.water.pct ?? 0) + "% of goal", frac: (h.water.pct ?? 0) / 100, color: cWater }] : []),
           ])}
         </div>)}
       {p && tile("peptides", <div>
           {big(p.nextCountdown, "", "Next dose " + p.nextWhen, cMed)}
-          <div style={{ fontSize: 13, color: muted, marginTop: 10 }}>{p.compound + " \u00B7 " + p.lastMg + " " + p.cadence + " \u00B7 " + p.levelNow.toFixed(1) + " mg estimated now"}</div>
+          <div style={{ fontSize: 13, color: muted, marginTop: 10 }}>{p.compound + " \u00B7 " + p.lastMg + (p.cadence ? " " + p.cadence : "") + " \u00B7 " + p.levelNow.toFixed(1) + " mg estimated now"}</div>
         </div>)}
     </div>
   );
@@ -499,13 +499,18 @@ export default function App() {
         </Section>
         {h.sleep && (
           <Section heading="Sleep">
-            {big(h.sleep.last !== null ? h.sleep.last.toFixed(1) : "\u2013", "h last night", h.sleep.avg.toFixed(1) + " h average")}
+            {big(h.sleep.last !== null ? h.sleep.last.toFixed(1) : "\u2013", "h last night", h.sleep.n > 1 ? h.sleep.avg.toFixed(1) + " h average" : "")}
             <Cols {...k} labels={h.sleep.labels} values={h.sleep.values} color={cSleep} ref={h.sleep.goal} refLabel={"Goal " + h.sleep.goal + " h"} fmtv={(v) => v.toFixed(1)} />
           </Section>
         )}
         {h.weight && h.weight.daily.filter((v) => v !== null).length >= 2 && (
           <Section heading="Weight, last 28 days">
             <WeightChart w={h.weight} color={ink} ink={ink} muted={muted} font={font} />
+          </Section>
+        )}
+        {h.weight && h.weight.daily.filter((v) => v !== null).length < 2 && h.weight.current !== null && (
+          <Section heading="Weight">
+            {big(h.weight.current.toFixed(1), h.weight.unit, "First weigh-in logged. Your trend appears after the next one.")}
           </Section>
         )}
         {h.water && (
@@ -536,13 +541,13 @@ export default function App() {
           ]} />
           <MedChart t={p} color={cMed} ink={ink} muted={muted} track={track} font={font} />
           <div style={{ display: "flex", gap: 16, fontSize: 12, color: muted, fontFamily: font }}>
-            <span>Solid: estimated so far</span><span>Dashed: if the schedule is kept</span>
+            <span>Solid: estimated so far</span><span>{p.scheduled ? "Dashed: if the schedule is kept" : "Dashed: fading, if no further dose"}</span>
           </div>
-          <Metrics metrics={[
+          {p.scheduled && <Metrics metrics={[
             { value: p.levelNext.toFixed(2) + " mg", label: "At next dose" },
             { value: p.ssHigh.toFixed(1) + " mg", label: "Steady-state high" },
             { value: p.ssLow.toFixed(1) + " mg", label: "Steady-state low" },
-          ]} />
+          ]} />}
           {p.coach && <div style={{ fontSize: 14, color: ink, fontFamily: font, padding: "4px 0" }}>{p.coach}</div>}
         </Section>
         <Section heading="Last dose and injection site">
@@ -569,7 +574,7 @@ export default function App() {
   };
 
   return (
-    <Page title={DATA.name + "'s Grok Life"} summary={DATA.dateLabel + ". " + DATA.streak + "-day streak. Updated " + DATA.updated + "."} width="column" palette={pal}>
+    <Page title={DATA.name + "'s Grok Life"} summary={DATA.dateLabel + ". " + (DATA.streak >= 2 ? DATA.streak + "-day streak. " : "") + "Updated " + DATA.updated + "."} width="column" palette={pal}>
       {shown.length > 0 && <Segmented options={tabs} value={open} onChange={setView} />}
       {open !== "overview" && <div><Button label={"\u2039 Overview"} onClick={() => setView("overview")} /></div>}
       {open === "overview" ? overview : detail(open)}

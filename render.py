@@ -257,7 +257,11 @@ def weight_svg(data, day, units, ndays, w, h, goal_kg, left_pad=32, right_pad=6,
     s = [f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}"><defs>'
          f'<linearGradient id="wf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{TEXT}" stop-opacity=".14"/><stop offset="1" stop-color="{TEXT}" stop-opacity="0"/></linearGradient></defs>']
     ticks = nice_ticks(plo + pad * (0.12 if compact else 0.35), phi - pad * (0.12 if compact else 0.35), 5 if compact else 4) if ylabels else []
+    seen = set()
     for v in ticks:
+        if f"{v:.0f}" in seen:  # a flat or one-point curve: two ticks would read the same number twice
+            continue
+        seen.add(f"{v:.0f}")
         s.append(f'<line x1="{left_pad}" x2="{w - right_pad}" y1="{py(v):.1f}" y2="{py(v):.1f}" stroke="{TEXT}" stroke-opacity=".10"/>'
                  f'<text x="{left_pad - 8}" y="{py(v) + 4:.1f}" text-anchor="end" font-size="12" fill="{TEXT3}">{v:.0f}</text>')
     s.append(f'<path d="{fill}" fill="url(#wf)"/>')
@@ -295,7 +299,7 @@ def weight_svg(data, day, units, ndays, w, h, goal_kg, left_pad=32, right_pad=6,
     ad = sorted(av)
     info = dict(first=av[ad[0]], last=av[ad[-1]], low=min(daily.values()) if daily else min(av.values()),
                 high=max(daily.values()) if daily else max(av.values()), goal=goal, goal_in=goal_in,
-                n=(ad[-1] - ad[0]).days or 1, win=n)
+                n=(ad[-1] - ad[0]).days or 1, win=n, pts=len(av))
     return "".join(s), info
 
 
@@ -319,7 +323,7 @@ def change_line(delta_v, n, unit, good):
 def weight_html(data, day, units, ndays=30, coach_text=None, tag="Weight"):
     t = data.target(day)
     svg, info = weight_svg(data, day, units, ndays, INNER, 160, t["goal_weight_kg"])
-    if not info:
+    if not info or info["pts"] < 2:  # one weigh-in is a starting point, not a trend
         return None
     dv = info["last"] - info["first"]
     gt = (t.get("goal_type") or "").lower()
@@ -394,7 +398,7 @@ def pillar_rows(data, units, cur_days, prev_days, bars_vals, cur_stats, bars_w=1
         sleep=(f'{st["sleep"]:.1f} h avg \u00b7 goal {tt["sleep_goal_h"]:g} h' if st["sleep"] is not None else "No sleep logged"),
         nutrition=(f'{fmt(st["cal"])} kcal \u00b7 protein {st["prot_hit"]}/{st["logged"]} days' if st["cal"] is not None else "No meals logged"),
         hydration=(f'{water_txt(units, st["water"])} {water_unit(units)} a day' if st["water"] is not None else "No water logged"),
-        activity=(f'{fmt(st["steps"])} steps \u00b7 {st["sessions"]} session{"s" if st["sessions"] != 1 else ""}' if st["steps"] is not None else f'{st["sessions"]} sessions'))
+        activity=(f'{fmt(st["steps"])} steps \u00b7 {st["sessions"]} session{"s" if st["sessions"] != 1 else ""}' if st["steps"] is not None else f'{st["sessions"]} session{"s" if st["sessions"] != 1 else ""}'))
     rows = [("heart-pulse", "recovery", "Recovery"), ("moon", "sleep", "Sleep"), ("utensils", "nutrition", "Nutrition"),
             ("droplet", "hydration", "Hydration"), ("activity", "activity", "Activity")]
     off = getattr(data, "off", ())
@@ -432,12 +436,15 @@ def weekly_html(data, end, units, coach_text=None):
     has_prev = any(d in data.food for d in prev_days)
     st = window_stats(data, days)
     word = "Strong week" if sc["score"] >= 80 else "Solid week" if sc["score"] >= 60 else "Rebuilding week"
+    early = st["logged"] < 3  # under three logged days a week score is not a verdict: say so instead of "Rebuilding"
+    if early:
+        word = "Early days"
     h = review_hero("Week score", sc["score"], sc_prev["score"] if has_prev else None, word,
                     f'{st["logged"]} of 7 days logged \u00b7 {sc["sessions"]} of {sc["planned_sessions"]} sessions', "last week")
-    line = coach_text if coach_text is not None else sc["focus"]
+    line = coach_text if coach_text is not None else (f'{st["logged"]} of 7 days logged so far. Keep logging and the next review will say more.' if early else sc["focus"])
     rows = pillar_rows(data, units, days, prev_days, lambda v: v, st)
     wsvg, winfo = weight_svg(data, end, units, 28, INNER, 152, data.target(end)["goal_weight_kg"], xticks=2, extremes=False, compact=True, top_pad=16, bottom_pad=28, goal_label=False)
-    wb = weight_block(winfo, wsvg, units, "Weight, last 28 days") if winfo and "health" not in getattr(data, "off", ()) else ""
+    wb = weight_block(winfo, wsvg, units, "Weight, last 28 days") if winfo and winfo["pts"] > 1 and "health" not in getattr(data, "off", ()) else ""
     body = (f'{h}<div style="margin-top:{SP["l"]}px">{coach(line)}</div>{section_label("Pillars compared with last week")}'
             f'<div style="margin-top:{SP["s"]}px;border-top:1px solid {HAIR}">{rows}</div>{wb}')
     return page_html(frame(body, f'{days[0].strftime("%b %-d")} \u2013 {end.strftime("%-d")}', streak_of(data, end), f'Weekly review \u00b7 {end.strftime("%b %-d")}', fixed=False)), sc
@@ -453,16 +460,20 @@ def monthly_html(data, end, units, coach_text=None):
     score = None if cur["day"] is None else round(cur["day"])
     pscore = None if prev["day"] is None else round(prev["day"])
     word = "Strong month" if (score or 0) >= 80 else "Solid month" if (score or 0) >= 60 else "Building month" if score is not None else "No score yet"
-    h = review_hero("Month score", score, pscore, word, f'{st["logged"]} of 30 days logged \u00b7 {st["sessions"]} sessions', "last month")
+    early = st["logged"] < 7
+    if early:
+        word = "Early days"
+    h = review_hero("Month score", score, pscore, word, f'{st["logged"]} of 30 days logged \u00b7 {st["sessions"]} session{"" if st["sessions"] == 1 else "s"}', "last month")
     rate = st["logged"] / 30
-    default_line = (f"Consistency is the lever: {st['logged']} of 30 days logged. Aim for 27 next month." if rate < 0.9
+    default_line = (f'{st["logged"]} of 30 days logged so far. The month view gets useful after a week of logging.' if early else
+                    f"Consistency is the lever: {st['logged']} of 30 days logged. Aim for 27 next month." if rate < 0.9
                     else f"{st['logged']} of 30 days logged. Consistency is your edge, keep it.")
     wk = S.weakest(cur)
     line = coach_text if coach_text is not None else (S.GAP_LINES[wk] if wk and rate >= 0.9 else default_line)
     rows = pillar_rows(data, units, days, prev_days, lambda v: v, st)
     wsvg, winfo = weight_svg(data, end, units, 30, INNER, 184, data.target(end)["goal_weight_kg"], xticks=3, extremes=True, top_pad=24, bottom_pad=28)
     health_on = "health" not in getattr(data, "off", ())
-    wb = weight_block(winfo, wsvg, units, "Weight, last 30 days", big_is_change=True) if winfo and health_on else ""
+    wb = weight_block(winfo, wsvg, units, "Weight, last 30 days", big_is_change=True) if winfo and winfo["pts"] > 1 and health_on else ""
     sites = [("waist_cm", "Waist"), ("hips_cm", "Hips"), ("chest_cm", "Chest"), ("arm_cm", "Arm"), ("thigh_cm", "Thigh")]
     cells = []
     for col, name in sites:
@@ -509,7 +520,7 @@ def render_all(kind, data_dir, out_dir, day, units_arg, ndays, coach=None, windo
     with Renderer() as r:
         for k in kinds:
             if k == "overview":
-                paths.append(r.shot(RMOD.overview_html(data, day, units, coach, shown), out / f"overview_{ds}.png"))
+                paths.append(r.shot(RMOD.overview_html(data, day, units, coach, shown), out / f"overview_{ds}.png", min_height=SHORT))
                 summary["day"] = S.pillars(data, day)
             elif k == "detail":
                 mods = shown if module in (None, "all") else [module]
@@ -522,7 +533,7 @@ def render_all(kind, data_dir, out_dir, day, units_arg, ndays, coach=None, windo
                         continue
                     html = RMOD.DETAIL[m](data, day, units, coach, **(dict(window=window, compound=compound) if m == "peptides" else {}))
                     if html:
-                        paths.append(r.shot(html, out / f"detail_{m}_{ds}.png"))
+                        paths.append(r.shot(html, out / f"detail_{m}_{ds}.png", min_height=SHORT))
                         if m == "peptides":
                             st = RMOD.M.status(data.root, RMOD.RM.default_now(day), compound)
                             summary["peptides"] = st and {k2: v for k2, v in st.items() if k2 in ("compound", "level_now", "level_next", "ss_peak", "ss_trough")}
@@ -544,7 +555,12 @@ def render_all(kind, data_dir, out_dir, day, units_arg, ndays, coach=None, windo
                 w = weight_html(data, day, units, ndays, coach)
                 if w:
                     paths.append(r.shot(w, out / f"weight_{ds}.png"))
+                else:
+                    print("note: only one weigh-in so far, the weight image needs two. Ask for another weigh-in.", file=sys.stderr)
     return paths, summary
+
+
+SHORT = 440  # CSS px: a one-module overview should not sit in a mostly empty 4:5 frame
 
 
 def main(argv=None):

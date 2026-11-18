@@ -79,6 +79,7 @@ def pdate(s):
 
 
 class Data:
+    _warned = False  # the no-targets warning prints once per run, not once per lookup
     def __init__(self, root):
         self.root = Path(root)
         r = lambda n: read_csv(self.root / n)  # noqa: E731
@@ -144,7 +145,9 @@ class Data:
                     continue
                 t[k] = str(v).strip() if k in ("units", "goal_type") else num(v, t[k])
         else:
-            print("warning: no targets.csv, using placeholder targets", file=sys.stderr)
+            if not Data._warned:
+                Data._warned = True
+                print("warning: no targets.csv, using placeholder targets", file=sys.stderr)
         return t
 
     def workout_sessions(self, d):

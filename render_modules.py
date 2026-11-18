@@ -85,6 +85,7 @@ def cols_svg(vals, labels, key, ref=None, ref_label="", w=INNER, h=132, value_fm
     bw = (w - gap * (n - 1)) / n
     c = SOLID[key]
     s = [f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}"><line x1="0" x2="{w}" y1="{base}" y2="{base}" stroke="{HAIR}"/>']
+    value_label = ""  # drawn after the reference line so the dashes never strike through the number
     for i, v in enumerate(vals):
         x = i * (bw + gap)
         last = i == n - 1
@@ -92,7 +93,7 @@ def cols_svg(vals, labels, key, ref=None, ref_label="", w=INNER, h=132, value_fm
             bh = max(3, (base - top) * v / ymax)
             s.append(f'<rect x="{x:.1f}" y="{base - bh:.1f}" width="{bw:.1f}" height="{bh:.1f}" rx="{min(bw / 2, 4):.1f}" fill="{c}" fill-opacity="{1 if last else .55}"/>')
             if last:
-                s.append(f'<text x="{x + bw / 2:.1f}" y="{base - bh - 8:.1f}" text-anchor="middle" font-size="13" font-weight="600" fill="{TEXT}" stroke="{BG}" stroke-width="4" paint-order="stroke">{value_fmt(v)}</text>')
+                value_label = f'<text x="{x + bw / 2:.1f}" y="{base - bh - 8:.1f}" text-anchor="middle" font-size="13" font-weight="600" fill="{TEXT}" stroke="{BG}" stroke-width="4" paint-order="stroke">{value_fmt(v)}</text>'
         else:
             s.append(f'<rect x="{x:.1f}" y="{base - 3}" width="{bw:.1f}" height="3" rx="1.5" fill="{HAIR}"/>')
         if labels[i] and (n <= 14 or i % 7 == 0 or last):
@@ -101,6 +102,7 @@ def cols_svg(vals, labels, key, ref=None, ref_label="", w=INNER, h=132, value_fm
         ry = base - (base - top) * ref / ymax
         s.append(f'<line x1="0" x2="{w}" y1="{ry:.1f}" y2="{ry:.1f}" stroke="{GOOD}" stroke-width="1.5" stroke-dasharray="6 6"/>'
                  f'<text x="0" y="{ry - 6:.1f}" font-size="12" font-weight="600" fill="{GOOD}" stroke="{BG}" stroke-width="4" paint-order="stroke">{ref_label}</text>')
+    s.append(value_label)
     s.append("</svg>")
     return "".join(s)
 
@@ -112,8 +114,13 @@ def list_row(left, mid, right, sub=None, h=52):
             f'<span style="white-space:nowrap">{right}</span></div>')
 
 
+def _starting(data):
+    """Footer note while the user has no targets.csv yet, so a 2,000 kcal placeholder is never mistaken for their plan."""
+    return "" if data.targets else " \u00b7 starting targets"
+
+
 def wrap(day, data, body, label, key=None):
-    return R.page_html(R.frame(body, day.strftime("%a, %b %-d"), R.streak_of(data, day), R.foot_time(day, label), fixed=False))
+    return R.page_html(R.frame(body, day.strftime("%a, %b %-d"), R.streak_of(data, day), R.foot_time(day, label + _starting(data)), fixed=False))
 
 
 # ------------------------------------------------------------------- data ----
@@ -200,7 +207,7 @@ def b_health(data, day, units):
     if av:
         first, last = av[min(av)], av[max(av)]
         d = units.wt(last) - units.wt(first)
-        sub = "steady" if abs(d) < 0.1 else f'{"down" if d < 0 else "up"} {abs(d):.1f} in 28 days'
+        sub = "first weigh-in" if len(av) < 2 else "steady" if abs(d) < 0.1 else f'{"down" if d < 0 else "up"} {abs(d):.1f} in 28 days'
         cols.append((icon("scale", 16, TEXT, 2), "Weight", f"{units.wt(last):.1f}", units.w, None, None, sub))
     if day in data.water:
         cols.append((icon("droplet", 16, SOLID["hydration"], 2), "Water", R.water_txt(units, data.water[day]), R.water_unit(units), "hydration", (p["hydration"] or 0) / 100, f'{p["hydration"]}% of goal'))
@@ -220,10 +227,13 @@ def b_peptides(data, day, units):
     if not st:
         return ""
     nxt = st["next"]
-    sub = f'{st["label"]} \u00b7 {st["last"]["mg"]:g} mg {RM.cadence(st["interval_days"])}'
-    left = big(nxt["countdown"], "", f'Next dose {nxt["t"].strftime("%a")}, {RM.short_time(nxt["t"])}', color=SOLID["medication"])
+    sub = f'{st["label"]} \u00b7 {st["last"]["mg"]:g} mg' + (f' {RM.cadence(st["interval_days"])}' if st["scheduled"] else "")
+    left = (big(nxt["countdown"], "", f'Next dose {nxt["t"].strftime("%a")}, {RM.short_time(nxt["t"])}', color=SOLID["medication"]) if st["scheduled"]
+            else big(f'{st["level_now"]:.2f}', "mg", "Estimated level now, no schedule set yet", color=SOLID["medication"]))
+    foot = (f'{sub} \u00b7 {st["level_now"]:.1f} mg estimated now' if st["scheduled"]
+            else f'{sub} \u00b7 last dose {RM.fmt_when(st["last"]["t"], now)}')
     return block("peptides", f'<div style="display:flex;justify-content:space-between;align-items:flex-end">{left}{RM.spark(st)}</div>'
-                 f'<div class="lab" style="margin-top:{SP["m"]}px">{sub} \u00b7 {st["level_now"]:.1f} mg estimated now</div>')
+                 f'<div class="lab" style="margin-top:{SP["m"]}px">{foot}</div>')
 
 
 BLOCKS = dict(workouts=b_workouts, nutrition=b_nutrition, activity=b_activity, health=b_health, peptides=b_peptides)
@@ -243,7 +253,7 @@ def overview_html(data, day, units, coach_text=None, shown=None):
     elif coach_text:
         parts.append(f'<div style="margin-bottom:{SP["l"]}px">{R.coach(coach_text, 1)}</div>')
     parts += [BLOCKS[k](data, day, units) for k in CFG.ORDER if k in shown]
-    return R.page_html(R.frame("".join(parts), day.strftime("%a, %b %-d"), R.streak_of(data, day), R.foot_time(day, "Overview"), fixed=False))
+    return R.page_html(R.frame("".join(parts), day.strftime("%a, %b %-d"), R.streak_of(data, day), R.foot_time(day, "Overview" + _starting(data)), fixed=False))
 
 
 # ----------------------------------------------------------------- detail ----
@@ -350,15 +360,18 @@ def d_health(data, day, units, coach_text=None):
     sl = [data.sleep.get(d) for d in days]
     if any(v is not None for v in sl):
         got = [v for v in sl if v is not None]
-        parts.append(f'{sec("Sleep")}<div style="display:flex;align-items:baseline;gap:8px;margin-top:{SP["s"]}px"><span class="disp" style="font-size:44px">{sl[-1]:.1f}</span><span class="lab">h last night</span>'
-                     f'<span class="lab" style="margin-left:auto">{S.avg(got):.1f} h average</span></div>'
-                     f'<div style="margin-top:{SP["m"]}px">{cols_svg(sl, [DAYL[d.weekday()] for d in days], "sleep", ref=t["sleep_goal_h"], ref_label=f"Goal {t["sleep_goal_h"]:g} h", value_fmt=lambda v: f"{v:.1f}") if sl[-1] else cols_svg(sl, [DAYL[d.weekday()] for d in days], "sleep", ref=t["sleep_goal_h"], ref_label=f"Goal {t["sleep_goal_h"]:g} h", value_fmt=lambda v: f"{v:.1f}")}</div>')
+        parts.append(f'{sec("Sleep")}<div style="display:flex;align-items:baseline;gap:8px;margin-top:{SP["s"]}px"><span class="disp" style="font-size:44px">{got[-1]:.1f}</span><span class="lab">h {"last night" if sl[-1] is not None else "most recent night"}</span>'
+                     + (f'<span class="lab" style="margin-left:auto">{S.avg(got):.1f} h average</span>' if len(got) > 1 else "") + '</div>'
+                     f'<div style="margin-top:{SP["m"]}px">{cols_svg(sl, [DAYL[d.weekday()] for d in days], "sleep", ref=t["sleep_goal_h"], ref_label=f"Goal {t["sleep_goal_h"]:g} h", value_fmt=lambda v: f"{v:.1f}")}</div>')
     # weight
     wsvg, winfo = R.weight_svg(data, day, units, 28, INNER, 152, t["goal_weight_kg"], xticks=2, extremes=False, compact=True, top_pad=16, bottom_pad=28, goal_label=False)
     if winfo:
         wd = winfo["last"] - winfo["first"]
-        parts.append(f'{sec("Weight, last 28 days")}<div style="display:flex;align-items:baseline;gap:8px;margin-top:{SP["s"]}px"><span class="disp" style="font-size:44px">{winfo["last"]:.1f}</span><span class="lab">{units.w}, 7-day average</span>'
-                     f'<span class="lab" style="margin-left:auto">{R.sgn(wd)} {units.w}</span></div><div style="margin-top:{SP["m"]}px">{wsvg}</div>')
+        one = winfo["pts"] < 2  # a single weigh-in has no average and no change to show yet
+        chg = "" if one else f'<span class="lab" style="margin-left:auto">{R.sgn(wd)} {units.w}</span>'
+        parts.append(f'{sec("Weight, last 28 days")}<div style="display:flex;align-items:baseline;gap:8px;margin-top:{SP["s"]}px"><span class="disp" style="font-size:44px">{winfo["last"]:.1f}</span>'
+                     f'<span class="lab">{units.w}{"" if one else ", 7-day average"}</span>{chg}</div>'
+                     + (f'<div class="lab" style="margin-top:{SP["s"]}px">First weigh-in logged. Your trend appears after the next one.</div>' if one else f'<div style="margin-top:{SP["m"]}px">{wsvg}</div>'))
     # water
     wv = [data.water.get(d) for d in days]
     if any(v for v in wv):

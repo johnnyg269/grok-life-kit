@@ -82,12 +82,12 @@ def build_treatment(root, data, day, u):
         effects.append(dict(key=e["key"], label=e["label"], value=v or 0, target=10,
                             shown=f"{v:.0f}/10" if v is not None else "\u2013", sub=sub))
     return dict(
-        compound=st["label"], brand=st.get("brand") or "", cadence=RM.cadence(st["interval_days"]),
+        compound=st["label"], brand=st.get("brand") or "", cadence=RM.cadence(st["interval_days"]) if st["scheduled"] else "", scheduled=st["scheduled"],
         levelNow=round(st["level_now"], 2), levelNext=round(st["level_next"], 2),
         ssHigh=round(st["ss_peak"], 1), ssLow=round(st["ss_trough"], 1),
         lastMg=f"{st['last']['mg']:g} mg", lastWhen=RM.fmt_when(st["last"]["t"], now),
         lastSite=st["last"]["site_label"], nextSite=st["next_site_label"],
-        nextCountdown=st["next"]["countdown"], nextWhen=RM.fmt_when(st["next"]["t"], now),
+        nextCountdown=st["next"]["countdown"] if st["scheduled"] else "\u2013", nextWhen=RM.fmt_when(st["next"]["t"], now) if st["scheduled"] else "not set yet",
         elapsed=round(st["next"]["elapsed"], 3), lastSiteKey=st["last"]["site"], nextSiteKey=st["next_site"],
         past=pts(past), future=pts(futs), doseX=[fx(d["t"]) for d in st["doses"] if t0 <= d["t"] <= now] + [fx(d["t"]) for d in extra],
         nowX=fx(now), ticks=ticks, effects=effects, coach=M.treatment_line(st, eff, data, now) or "")
@@ -180,7 +180,7 @@ def build(root, day, name, units_arg):
                  shown=f"{f['c']:,.0f} g", sub=f"of {t['carbs_g']:,.0f} g"),
             dict(key="fat", label="Fat", value=round(f["f"]), target=round(t["fat_g"]),
                  shown=f"{f['f']:,.0f} g", sub=f"of {t['fat_g']:,.0f} g")]
-        logged = [d for d in days7 if d in data.food and data.food[d]["cal"] >= 0.6 * t["calories"]]
+        logged = [d for d in days7 if S.logged(data, d)]  # same rule as the PNG: a day counts once it holds 30% of the calorie target
         avg = lambda xs: sum(xs) / len(xs) if xs else None  # noqa: E731
         ac, ap = avg([data.food[d]["cal"] for d in logged]), avg([data.food[d]["p"] for d in logged])
         hit = sum(1 for d in logged if data.food[d]["p"] >= 0.9 * t["protein_g"])
@@ -216,12 +216,12 @@ def build(root, day, name, units_arg):
                 current=round(u.wt(avg[last]), 1),
                 change=round(u.wt(avg[last]) - u.wt(avg[first]), 1) if first != last else None)
         sl = [data.sleep[d] for d in days7 if d in data.sleep]
-        sleep = dict(labels=lab7, values=[round(data.sleep.get(d, 0), 1) for d in days7], avg=round(sum(sl) / len(sl), 1),
+        sleep = dict(labels=lab7, values=[round(data.sleep.get(d, 0), 1) for d in days7], avg=round(sum(sl) / len(sl), 1), n=len(sl),
                      last=round(data.sleep[day], 1) if day in data.sleep else None, goal=round(t["sleep_goal_h"], 1) if t.get("sleep_goal_h") else 7.5,
                      pct=sc["sleep"]) if sl else None
         wl = [d for d in days7 if d in data.water]
-        wat = dict(labels=lab7, values=[round(water(data.water.get(d, 0)), 1) for d in days7], unit=wunit,
-                   today=wfmt(water(water_ml)), goal=round(water(t["water_ml"]), 1), pct=sc["hydration"]) if wl else None
+        wat = dict(labels=lab7, values=[round(water(data.water.get(d, 0)), 0 if u.imp else 1) for d in days7], unit=wunit,
+                   today=wfmt(water(water_ml)), goal=round(water(t["water_ml"]), 0 if u.imp else 1), pct=sc["hydration"]) if wl else None
         mods["health"] = dict(recovery=rec, sleep=sleep, weight=weight, water=wat)
 
     if "peptides" in shown:

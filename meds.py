@@ -271,6 +271,7 @@ def status(root, now=None, compound=None):
     ka, ke = rates(hl, tmax)
     last = past[-1]
     sc = sched.get(compound, {})
+    scheduled = bool(sc.get("interval_days") or sc.get("next_due"))  # False: the user never gave a schedule, everything "next" is a guess
     interval = sc.get("interval_days") or (COMPOUNDS.get(compound, {}).get("interval_days")) or 7
     nxt = sc.get("next_due")
     if nxt is None or nxt <= last["t"]:
@@ -282,7 +283,7 @@ def status(root, now=None, compound=None):
     elapsed = max(0.0, min(1.0, (now - last["t"]) / (nxt - last["t"]))) if nxt > last["t"] else 1.0
     steps = [d for d in past if d["mg"] == last["mg"]]
     return dict(compound=compound, label=label, brand=last["brand"] or sc.get("brand") or "", approved=approved,
-                half_life_h=hl, tmax_h=tmax, ka=ka, ke=ke, interval_days=interval, now=now,
+                half_life_h=hl, tmax_h=tmax, ka=ka, ke=ke, interval_days=interval, scheduled=scheduled, now=now,
                 last=dict(t=last["t"], mg=last["mg"], site=last["site"], site_label=SITE_LABEL.get(last["site"], ""), notes=last["notes"],
                           ago=fmt_countdown(now - last["t"]) if now > last["t"] else ""),
                 next=dict(t=nxt, countdown=fmt_countdown(nxt - now), overdue=nxt <= now, elapsed=elapsed),
@@ -317,19 +318,24 @@ def treatment_line(st, eff, data=None, now=None):
     hi = [e for e in eff if e["latest"] is not None and e["latest"] >= 8 and e["key"] in ("nausea", "heartburn", "constipation")]
     if hi:
         return f'{hi[0]["label"]} is at {hi[0]["latest"]:.0f}/10. If it keeps up, contact your prescriber.'
+    if not st["scheduled"]:
+        return "No schedule saved yet. Tell me how often you dose and when the next one is due, and I will track it."
     if data is not None:
-        days = [now.date() - dt.timedelta(i) for i in range(3)]
+        # today only counts once the evening has come: a half-logged morning is not "behind"
+        days = [now.date() - dt.timedelta(i) for i in range(0 if now.hour >= 18 else 1, 3 if now.hour >= 18 else 4)]
         low = [d for d in days if d in data.food and data.food[d]["cal"] < 1200]
         if len(low) >= 2:
             return "Intake has been under 1,200 kcal. Eat to your floor and tell your prescriber if you can't."
         prot = [(data.food[d]["p"], data.target(d)["protein_g"]) for d in days if d in data.food]
         if prot and sum(p for p, _ in prot) < 0.85 * sum(t for _, t in prot):
-            return "Appetite is low and protein is behind. Protein first at each meal."
+            return "Protein has run behind. Put protein first at each meal."
         if not any(data.workout_sessions(now.date() - dt.timedelta(i)) for i in range(6)):
             return "No lifting in 5 days. Resistance training helps protect muscle on a GLP-1."
     sa = next((e for e in eff if e["key"] == "suppressed_appetite"), None)
     if sa and sa["latest"] is not None and sa["latest"] >= 6:
         return "Appetite is suppressed. Small, protein-rich meals keep intake up."
+    if not st["scheduled"]:
+        return "No schedule saved yet. Tell me how often you dose and when the next one is due, and I will track it."
     if st["next"]["overdue"]:
         return "Your next dose was due. Check your label or prescriber about timing."
     return f'Next dose in {st["next"]["countdown"]}. The curve is an estimate, not a blood level.'
@@ -424,7 +430,8 @@ def cmd_status(a):
                level_now_mg=round(st["level_now"], 3), level_at_next_dose_mg=round(st["level_next"], 3),
                steady_state_trough_mg=round(st["ss_trough"], 3), steady_state_peak_mg=round(st["ss_peak"], 3),
                last_dose=dict(time=st["last"]["t"].isoformat(" ", "minutes"), mg=st["last"]["mg"], site=st["last"]["site_label"]),
-               next_dose=dict(time=st["next"]["t"].isoformat(" ", "minutes"), countdown=st["next"]["countdown"], overdue=st["next"]["overdue"]),
+               next_dose=(dict(time=st["next"]["t"].isoformat(" ", "minutes"), countdown=st["next"]["countdown"], overdue=st["next"]["overdue"]) if st["scheduled"] else None),
+               scheduled=st["scheduled"],
                next_site=st["next_site_label"], doses_logged=st["n_doses"],
                side_effects={e["key"]: e["latest"] for e in eff}, estimate=True)
     print(json.dumps(out))

@@ -67,13 +67,13 @@ Rules for logging food:
 Before any numbers, ask two short questions, in this order, and save the answers with `config.py` (section 8.3):
 
 1. "Which areas do you want Grok Life to track?" Offer all five and let them pick any: **Workouts**, **Diet and macros**, **Steps and activity**, **Health** (weight, sleep, recovery, water), **Peptides and meds** (only for people on a GLP-1 or other peptide; do not push it). Default suggestion: the first four.
-2. "Light or dark?" Light is the default. Palette is Lagoon unless they ask for another (8.1.1).
+2. Look is not asked up front. Start in light (Lagoon palette, 8.1.1) and offer dark once, right after the first picture. Save a switch with `config.py theme dark` and re-send.
 
-Then run `python config.py init --modules <comma list of their choices> --theme <light|dark>`. Everything they did not pick stays off: no block, no tab, no questions about it, no mention in images. Tell them once that they can turn any area on later ("turn on peptides") and nothing is lost. Do not ask the intake questions for an area that is off (for example skip the training-days question when Workouts is off, and skip the GLP-1 question when Peptides and meds is off). If an area depends on Apple Health data that is not connected yet (section 10), it is simply hidden until the first rows arrive (8.3).
+Then run `python config.py init --modules <comma list of their choices>` (add `--theme dark` only if they already asked for it). Everything they did not pick stays off: no block, no tab, no questions about it, no mention in images. Tell them once that they can turn any area on later ("turn on peptides") and nothing is lost. Do not ask the intake questions for an area that is off (for example skip the training-days question when Workouts is off, and skip the GLP-1 question when Peptides and meds is off). If an area depends on Apple Health data that is not connected yet (section 10), it is simply hidden until the first rows arrive (8.3).
 
 ### 1.1 Intake needed
 
-Ask: age, sex, height, current weight, goal weight, goal (lose, gain, maintain, recomp), activity level, training days per week, units. If Peptides and meds is on, ask: "Which compound, like Zepbound, Wegovy or Ozempic?" then the dose they take now, how often, when the last injection was and where, and log it with `meds.py` (section 5.8). If it is off, never raise it again; if the user later mentions a GLP-1 or peptide, offer to turn the module on with `config.py enable peptides`. Then compute.
+Ask: age, sex, height, current weight, goal weight, goal (lose, gain, maintain, or build muscle while losing fat, which the plan calls recomp), activity level, training days per week, units. If Peptides and meds is on, ask: "Which compound, like Zepbound, Wegovy or Ozempic?" then the dose they take now, how often, when the last injection was and where, and log it with `meds.py` (section 5.8). If it is off, never raise it again; if the user later mentions a GLP-1 or peptide, offer to turn the module on with `config.py enable peptides`. Then compute.
 
 Mifflin-St Jeor resting energy (kcal/day), with weight in kg and height in cm:
 
@@ -690,7 +690,19 @@ Options: `--data DIR` (default `/workspace/macro-coach`), `--out DIR` (default `
 
 The weight image and the weight curve inside Health: the 7-day average as the hero number, one plain sentence with an arrow ("Down 3.5 lb in 29 days", in the recovery color when it matches the goal), the curve straight on the background (no card): a 7-day average line in text color over faint daily dots with a soft fade underneath, hairline gridlines, high and low markers, a dashed goal line when the goal sits within about one data-range of the trend and otherwise a "Goal" label at the top right, and one sentence about the weekly pace.
 
-After a log, send the image and one line of text. Do not repeat what the image shows. Missing data never breaks an image (a missing value shows a dash, empty pillars are dropped). `GROKLIFE_NO_CHROMIUM=1` forces the fallbacks for testing. Without Chromium, only eod, weekly, monthly and weight draw, with basic matplotlib charts that ignore the theme and the module settings; `overview` and `detail` exit with a clear message instead. The old `SWOLE_FONTS` and `SWOLE_NO_CHROMIUM` names still work as aliases. `make_sample_data.py DIR` (also writes a `config.json` with every module on), `make_sample_photos.py DIR` (labelled placeholder renders, not people), `test_modules.py`, `test_meds.py` and `test_compare_photos.py` sit beside the scripts, and `samples/` holds example outputs: `samples/charts/{light,dark}/` (overview and every detail page), `overview_peptides_off.png`, and `palette-options.png`.
+After a log, send the image and one line of text. Do not repeat what the image shows. Missing data never breaks an image (a missing value shows a dash, empty pillars are dropped). `GROKLIFE_NO_CHROMIUM=1` forces the fallbacks for testing. Without Chromium, only eod, weekly, monthly and weight draw, with basic matplotlib charts that ignore the theme and the module settings; `overview` and `detail` exit with a clear message instead. The old `SWOLE_FONTS` and `SWOLE_NO_CHROMIUM` names still work as aliases. `make_sample_data.py DIR` (also writes a `config.json` with every module on), `make_sample_photos.py DIR` (labelled placeholder renders, not people), `test_modules.py`, `test_meds.py`, `test_firstday.py` and `test_compare_photos.py` sit beside the scripts, and `samples/` holds example outputs: `samples/charts/{light,dark}/` (overview and every detail page), `overview_peptides_off.png`, `day-one/` (a new user's first day), and `palette-options.png`.
+
+### 8.5 Day one and small data
+
+A new user's first images must be honest, not empty and not invented. The renderers already behave like this; keep your own replies consistent with it.
+
+- No `targets.csv` yet: images use a placeholder 2,000 kcal / 150 g protein and the footer reads "starting targets". Write the real targets as soon as you have the stats, and ask lb or kg the first time a weight or water amount comes up.
+- Short overviews are as tall as their content (about 1000 px minimum), not stretched to a 4:5 frame.
+- One weigh-in is a starting point: the overview says "first weigh-in", the Health page shows the number and "Your trend appears after the next one", and `charts.py weight` prints a note instead of an image until there are two.
+- Readiness with no history rests on last night's sleep alone, and the coach line says so ("Based on last night's sleep alone for now").
+- Averages count only days with at least 30% of the calorie target logged, in the images and on the dashboard alike.
+- A peptide dose with no schedule row: `meds.py status` returns `scheduled: false` and `next_dose: null`. The images show the estimated level and a calm "Not set yet" panel, no next-dose date or countdown, no projected future doses, no steady-state numbers. Ask once how often and when the next is due, then `meds.py schedule`. The dates and projection appear on the next image.
+- The peptides coach line only says protein is behind once it is evening (18:00), never at a half-logged morning.
 
 ## 9. Dashboard
 
