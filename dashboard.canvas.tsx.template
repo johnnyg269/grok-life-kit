@@ -1,0 +1,578 @@
+import { useState, Page, Section, Metrics, Properties, Segmented, Button, useGrokTheme } from "grok/canvas";
+
+// ---- Grok Life dashboard v4. Fixed layout: do not reorder, rename, or restyle. ----
+// Only the two marked blocks below change after onboarding. Update them with EditCanvas.
+// One page, two levels: an overview (tabs plus one tile per module) and a detail view per module.
+// Modules that are off, or have no data yet, are null in DATA and are not drawn: no tab, no tile, no placeholder.
+
+type Pal = string[]; // recovery, sleep, nutrition, hydration, activity, medication
+type Ring = { key: string; label: string; value: number; target: number; shown: string; sub: string };
+type Weight = { unit: string; labels: string[]; daily: (number | null)[]; avg: (number | null)[]; goal: number | null; current: number | null; change: number | null };
+type Workouts = {
+  sessions: number; planned: number; minutes: number; kcal: number; avg: number; last: string;
+  days: { label: string; done: boolean; mins: number }[];
+  weeks: { labels: string[]; values: number[] };
+  recent: { when: string; name: string; mins: number; kcal: number }[];
+};
+type Nutrition = {
+  kcalLeft: number; rings: Ring[]; meals: { label: string; value: number }[];
+  cal7: { labels: string[]; values: number[]; target: number };
+  avgIntake: string; avgProtein: string; proteinDays: string;
+};
+type Activity = {
+  steps: number; goal: number; pct: number; week: { labels: string[]; values: number[] };
+  avg30: string; goalDays: string; best: string;
+};
+type Health = {
+  recovery: { value: number | null; state: string; coach: string };
+  sleep: { labels: string[]; values: number[]; avg: number; last: number | null; goal: number; pct: number | null } | null;
+  weight: Weight | null;
+  water: { labels: string[]; values: number[]; unit: string; today: string; goal: number; pct: number | null } | null;
+};
+type Treatment = {
+  compound: string; brand: string; cadence: string;
+  levelNow: number; levelNext: number; ssHigh: number; ssLow: number;
+  lastMg: string; lastWhen: string; lastSite: string; lastSiteKey: string;
+  nextWhen: string; nextCountdown: string; nextSite: string; nextSiteKey: string; elapsed: number;
+  past: [number, number][]; future: [number, number][]; doseX: number[]; nowX: number; ticks: [number, number | string][];
+  effects: Ring[];
+  coach: string;
+};
+type Dash = {
+  name: string; dateLabel: string; updated: string; streak: number;
+  pal: { light: Pal; dark: Pal };
+  shown: string[];
+  titles: Record<string, string>;
+  workouts: Workouts | null; nutrition: Nutrition | null; activity: Activity | null; health: Health | null; peptides: Treatment | null;
+};
+type PhotoData = { src: string; pose: string; before: string; after: string; days: number; weight: string };
+
+// DATA-START
+const DATA: Dash = __DATA__;
+// DATA-END
+// PHOTO-START
+const PHOTO = __PHOTO__ as PhotoData | null;
+// PHOTO-END
+
+const fmt = (n: number) => Math.round(n).toLocaleString("en-US");
+const TAB: Record<string, string> = { workouts: "Workouts", nutrition: "Diet", activity: "Activity", health: "Health", peptides: "Meds" };
+
+// Monotone cubic (Fritsch-Carlson) path through points: smooth, never overshoots the data.
+function smoothPath(pts: [number, number][]): string {
+  const n = pts.length;
+  if (n === 0) return "";
+  if (n === 1) return "M" + pts[0][0].toFixed(1) + " " + pts[0][1].toFixed(1);
+  const dx: number[] = [], m: number[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    dx.push(pts[i + 1][0] - pts[i][0]);
+    m.push(dx[i] ? (pts[i + 1][1] - pts[i][1]) / dx[i] : 0);
+  }
+  const t: number[] = [m[0]];
+  for (let i = 1; i < n - 1; i++) t.push(m[i - 1] * m[i] <= 0 ? 0 : (m[i - 1] + m[i]) / 2);
+  t.push(m[n - 2]);
+  for (let i = 0; i < n - 1; i++) {
+    if (m[i] === 0) { t[i] = 0; t[i + 1] = 0; continue; }
+    const a = t[i] / m[i], b = t[i + 1] / m[i], q = a * a + b * b;
+    if (q > 9) { const k = 3 / Math.sqrt(q); t[i] = k * a * m[i]; t[i + 1] = k * b * m[i]; }
+  }
+  let d = "M" + pts[0][0].toFixed(1) + " " + pts[0][1].toFixed(1);
+  for (let i = 0; i < n - 1; i++) {
+    const h = dx[i] / 3;
+    d += " C" + (pts[i][0] + h).toFixed(1) + " " + (pts[i][1] + t[i] * h).toFixed(1) + " " +
+      (pts[i + 1][0] - h).toFixed(1) + " " + (pts[i + 1][1] - t[i + 1] * h).toFixed(1) + " " +
+      pts[i + 1][0].toFixed(1) + " " + pts[i + 1][1].toFixed(1);
+  }
+  return d;
+}
+
+// Arc as an SVG path (clockwise from 12 o'clock) so round caps and a second lap are easy.
+function arc(c: number, r: number, frac: number): string {
+  const f = Math.min(Math.max(frac, 0), 0.9999);
+  const a = f * 2 * Math.PI - Math.PI / 2;
+  const x = c + r * Math.cos(a), y = c + r * Math.sin(a);
+  return "M" + c + " " + (c - r) + " A" + r + " " + r + " 0 " + (f > 0.5 ? 1 : 0) + " 1 " + x.toFixed(2) + " " + y.toFixed(2);
+}
+
+type Ink = { ink: string; muted: string; track: string; font: string };
+
+// Hero readiness ring: one arc, round caps, big tabular number.
+function ScoreRing(p: Ink & { value: number | null; state: string; color: string }) {
+  const S = 220, c = 110, stroke = 16, rad = c - stroke / 2 - 2;
+  const frac = (p.value ?? 0) / 100;
+  return (
+    <svg viewBox={"0 0 " + S + " " + S} width="100%" style={{ maxWidth: 260, display: "block", margin: "0 auto" }} role="img"
+      aria-label={"Recovery " + (p.value === null ? "not available" : p.value + " percent, " + p.state)}>
+      <circle cx={c} cy={c} r={rad} fill="none" stroke={p.color} strokeOpacity={0.16} strokeWidth={stroke} />
+      {frac > 0 && <path d={arc(c, rad, frac)} fill="none" stroke={p.color} strokeWidth={stroke} strokeLinecap="round" />}
+      <text x={c} y={c - 30} textAnchor="middle" fontSize={12} fontWeight={600} fill={p.muted} fontFamily={p.font}>Recovery</text>
+      <text x={c} y={c + 24} textAnchor="middle" fontSize={64} fontWeight={800} fill={p.ink} fontFamily={p.font} style={{ letterSpacing: -2.5 }}>{p.value === null ? "\u2013" : String(p.value)}</text>
+      <text x={c} y={c + 50} textAnchor="middle" fontSize={14} fontWeight={600} fill={p.color} fontFamily={p.font}>{p.state}</text>
+    </svg>
+  );
+}
+
+// Concentric rings: calories (outer), protein, carbs, fat. Overflow draws a second lap.
+function Rings(p: Ink & { rings: Ring[]; color: string; kcalLeft: number }) {
+  const S = 260, c = 130, stroke = 16, gap = 4;
+  const over = p.kcalLeft < 0;
+  return (
+    <svg viewBox={"0 0 " + S + " " + S} width="100%" style={{ maxWidth: 320, display: "block", margin: "0 auto" }} role="img"
+      aria-label={"Calories, protein, carbs and fat today. " + fmt(Math.abs(p.kcalLeft)) + (over ? " kcal over" : " kcal left")}>
+      {p.rings.slice(0, 4).map((r, i) => {
+        const rad = c - stroke / 2 - 4 - i * (stroke + gap);
+        const tone = 1 - i * 0.2;
+        const frac = r.target > 0 ? r.value / r.target : 0;
+        return (
+          <g key={r.key}>
+            <circle cx={c} cy={c} r={rad} fill="none" stroke={p.color} strokeOpacity={0.18} strokeWidth={stroke} />
+            {frac > 0 && <path d={arc(c, rad, Math.min(frac, 1))} fill="none" stroke={p.color} strokeOpacity={tone} strokeWidth={stroke} strokeLinecap="round" />}
+            {frac > 1 && <path d={arc(c, rad, frac - 1)} fill="none" stroke={p.color} strokeOpacity={tone} strokeWidth={stroke} strokeLinecap="round" />}
+          </g>
+        );
+      })}
+      <text x={c} y={c + 6} textAnchor="middle" fontSize={44} fontWeight={700} fill={p.ink} fontFamily={p.font} style={{ letterSpacing: -1.5 }}>{fmt(Math.abs(p.kcalLeft))}</text>
+      <text x={c} y={c + 28} textAnchor="middle" fontSize={13} fontWeight={500} fill={p.muted} fontFamily={p.font}>{over ? "kcal over" : "kcal left"}</text>
+    </svg>
+  );
+}
+
+// Thin progress bar. Rule for every SVG here: never fill a rect with a neutral (ink or white) colour, the host reads it as a dark or light panel and re-themes the whole page. Pillar hues only.
+function Bar(p: Ink & { label: string; shown: string; sub: string; frac: number; color: string }) {
+  const frac = Math.min(Math.max(p.frac, 0), 1);
+  return (
+    <div style={{ fontFamily: p.font }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: p.muted }}>
+        <span>{p.label}</span><span>{p.sub}</span>
+      </div>
+      <div style={{ fontSize: 22, fontWeight: 600, color: p.ink, margin: "2px 0 6px" }}>{p.shown}</div>
+      <svg viewBox="0 0 100 6" width="100%" height={6} preserveAspectRatio="none" role="img" aria-label={p.label + " progress"}>
+        <rect x={0} y={0} width={100} height={6} rx={3} fill={p.color} fillOpacity={0.18} />
+        <rect x={0} y={0} width={Math.max(frac * 100, frac > 0 ? 3 : 0)} height={6} rx={3} fill={p.color} />
+      </svg>
+    </div>
+  );
+}
+
+// Column chart in a pillar colour: the last column is the strongest, a dashed line marks the goal.
+function Cols(p: Ink & { labels: string[]; values: number[]; color: string; ref?: number; refLabel?: string; fmtv?: (v: number) => string; h?: number; every?: number }) {
+  const bare = p.labels.every((l) => l === "");
+  const W = 340, H = p.h ?? 150, L = 0, T = bare ? 4 : 22, B = bare ? 4 : 22, n = p.values.length;
+  const top = Math.max(...p.values, p.ref ?? 0, 1) * 1.1;
+  const bw = (W / n) * 0.66, step = W / n;
+  const y = (v: number) => T + (1 - v / top) * (H - T - B);
+  const f = p.fmtv ?? fmt;
+  const ry = p.ref !== undefined ? y(p.ref) : null;
+  return (
+    <svg viewBox={"0 0 " + W + " " + H} width="100%" role="img" aria-label={(p.refLabel ?? "") + " " + p.labels.join(", ")} style={{ fontFamily: p.font }}>
+      {p.values.map((v, i) => {
+        const last = i === n - 1;
+        const hh = Math.max(H - B - y(v), v > 0 ? 3 : 0);
+        return (
+          <g key={i}>
+            <rect x={L + i * step + (step - bw) / 2} y={H - B - hh} width={bw} height={hh} rx={Math.min(5, bw / 2)} fill={p.color} fillOpacity={last ? 1 : 0.42} />
+            {(n <= 8 || i % (p.every ?? 1) === 0 || last) && p.labels[i] !== "" && (
+              <text x={L + i * step + step / 2} y={H - 6} textAnchor="middle" fontSize={11} fill={p.muted}>{p.labels[i]}</text>
+            )}
+          </g>
+        );
+      })}
+      {ry !== null && <line x1={0} x2={W} y1={ry} y2={ry} stroke={p.ink} strokeOpacity={0.5} strokeWidth={1.2} strokeDasharray="3 4" />}
+      {ry !== null && p.refLabel && <text x={0} y={ry - 5} fontSize={11} fontWeight={600} fill={p.ink} fillOpacity={0.8}>{p.refLabel}</text>}
+      {n <= 8 && !bare && <text x={L + (n - 1) * step + step / 2} y={y(p.values[n - 1]) - 6} textAnchor="middle" fontSize={12} fontWeight={600} fill={p.ink}>{f(p.values[n - 1])}</text>}
+    </svg>
+  );
+}
+
+// A week of dots: filled = trained.
+function Dots(p: Ink & { days: Workouts["days"]; color: string; check: string; big?: boolean }) {
+  const r = p.big ? 14 : 10, gap = p.big ? 12 : 8;
+  const W = 7 * (2 * r) + 6 * gap, H = 2 * r + (p.big ? 22 : 0);
+  return (
+    <svg viewBox={"0 0 " + W + " " + H} width="100%" style={{ maxWidth: W * (p.big ? 1.2 : 1), fontFamily: p.font, display: "block" }} role="img" aria-label="Workouts this week">
+      {p.days.map((d, i) => {
+        const cx = r + i * (2 * r + gap);
+        return (
+          <g key={i}>
+            <circle cx={cx} cy={r} r={r - 1} fill={d.done ? p.color : "none"} stroke={d.done ? p.color : p.ink} strokeOpacity={d.done ? 1 : 0.28} strokeWidth={2} />
+            {d.done && <path d={"M" + (cx - r * 0.38) + " " + r + " l" + r * 0.28 + " " + r * 0.3 + " l" + r * 0.5 + " " + -r * 0.6} fill="none" stroke={p.check} strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" />}
+            {p.big && <text x={cx} y={H - 2} textAnchor="middle" fontSize={11} fill={p.muted}>{d.label}</text>}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function WeightChart(p: { w: Weight; color: string; ink: string; muted: string; font: string }) {
+  const W = 340, H = 220, L = 36, R = 12, T = 34, B = 30;
+  const n = p.w.labels.length;
+  const vals: number[] = [];
+  p.w.daily.forEach((v) => { if (v !== null) vals.push(v); });
+  p.w.avg.forEach((v) => { if (v !== null) vals.push(v); });
+  let lo = Math.min(...vals);
+  let hi = Math.max(...vals);
+  const span = Math.max(hi - lo, 0.5);
+  const goal = p.w.goal;
+  // A goal inside the data range gets a dashed line; a far-away goal becomes a chip so the trend stays readable.
+  const showGoal = goal !== null && lo - goal <= span && goal - hi <= span;
+  if (goal !== null && showGoal) { lo = Math.min(lo, goal); hi = Math.max(hi, goal); }
+  const pad = Math.max((hi - lo) * 0.18, 0.5);
+  lo -= pad; hi += pad;
+  const x = (i: number) => L + (n > 1 ? (i * (W - L - R)) / (n - 1) : 0);
+  const y = (v: number) => T + ((hi - v) * (H - T - B)) / (hi - lo);
+  const pts: [number, number][] = [];
+  p.w.avg.forEach((v, i) => { if (v !== null) pts.push([x(i), y(v)]); });
+  const keep = Math.max(1, Math.ceil(pts.length / 14));
+  const thin = pts.filter((_, i) => i % keep === 0);
+  if (pts.length > 0 && thin[thin.length - 1] !== pts[pts.length - 1]) thin.push(pts[pts.length - 1]);
+  const line = smoothPath(thin);
+  const base = H - B + 4;
+  const fill = thin.length > 1 ? line + " L" + thin[thin.length - 1][0].toFixed(1) + " " + base + " L" + thin[0][0].toFixed(1) + " " + base + " Z" : "";
+  const last = thin[thin.length - 1];
+  const mid = (lo + hi) / 2;
+  const xt = [0, Math.floor((n - 1) / 2), n - 1];
+  return (
+    <svg viewBox={"0 0 " + W + " " + H} width="100%" role="img" aria-label="Weight: daily weigh-ins, 7-day average curve, goal">
+      <defs>
+        <linearGradient id="wfill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor={p.color} stopOpacity="0.28" />
+          <stop offset="1" stopColor={p.color} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <text x={L - 8} y={y(mid) + 4} textAnchor="end" fontSize={11} fill={p.muted} fontFamily={p.font}>{mid.toFixed(0)}</text>
+      {fill && <path d={fill} fill="url(#wfill)" />}
+      {showGoal && goal !== null && (
+        <g>
+          <line x1={L} x2={W - R} y1={y(goal)} y2={y(goal)} stroke={p.muted} strokeWidth={1.5} strokeDasharray="2 5" strokeLinecap="round" />
+          <text x={W - R} y={y(goal) - 7} textAnchor="end" fontSize={11} fontWeight={600} fill={p.ink} fontFamily={p.font}>{"Goal " + goal.toFixed(1)}</text>
+        </g>
+      )}
+      {goal !== null && !showGoal && (
+        <text x={W - R} y={T - 14} textAnchor="end" fontSize={11} fontWeight={600} fill={p.muted} fontFamily={p.font}>{(goal < lo ? "\u2193 " : "\u2191 ") + "Goal " + goal.toFixed(1)}</text>
+      )}
+      {p.w.daily.map((v, i) => (v === null ? null : <circle key={i} cx={x(i)} cy={y(v)} r={2.6} fill={p.ink} fillOpacity={0.28} />))}
+      <path d={line} fill="none" stroke={p.color} strokeWidth={3.5} strokeLinecap="round" strokeLinejoin="round" />
+      {last && (<g><circle cx={last[0]} cy={last[1]} r={6.5} fill={p.color} /><circle cx={last[0]} cy={last[1]} r={2.5} fill={p.muted} fillOpacity={0.35} /></g>)}
+      {xt.map((i, k) => (
+        <text key={k} x={x(i)} y={H - 8} textAnchor={k === 0 ? "start" : k === 2 ? "end" : "middle"} fontSize={11} fill={p.muted} fontFamily={p.font}>{p.w.labels[i]}</text>
+      ))}
+    </svg>
+  );
+}
+
+// Estimated medication level: solid past, dashed projection if the schedule is kept, dose ticks, now-dot with callout.
+function MedChart(p: { t: Treatment; color: string; ink: string; muted: string; track: string; font: string }) {
+  const W = 340, H = 210, L = 30, R = 8, T = 40, B = 28;
+  const all = p.t.past.concat(p.t.future);
+  const top = Math.max(...all.map((q) => q[1]), 0.01) * 1.2;
+  const rough = top / 3;
+  const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((v) => v >= rough) || rough;
+  const ticks: number[] = [];
+  for (let v = 0; v <= top; v += step) ticks.push(v);
+  const ymax = Math.max(top, ticks[ticks.length - 1] * 1.05);
+  const x = (f: number) => L + f * (W - L - R);
+  const y = (v: number) => T + (1 - v / ymax) * (H - T - B);
+  const line = (pts: [number, number][]) => pts.map((q, i) => (i ? "L" : "M") + x(q[0]).toFixed(1) + " " + y(q[1]).toFixed(1)).join(" ");
+  const nowPt = p.t.past[p.t.past.length - 1];
+  const nx = x(p.t.nowX), ny = y(nowPt[1]);
+  const fillPath = line(p.t.past) + " L" + x(p.t.past[p.t.past.length - 1][0]).toFixed(1) + " " + y(0).toFixed(1) + " L" + x(p.t.past[0][0]).toFixed(1) + " " + y(0).toFixed(1) + " Z";
+  return (
+    <svg viewBox={"0 0 " + W + " " + H} width="100%" role="img" aria-label={"Estimated " + p.t.compound + " level over the last 30 days, now " + p.t.levelNow.toFixed(2) + " mg"} style={{ fontFamily: p.font }}>
+      {ticks.map((v) => (
+        <g key={v}>
+          <line x1={L} x2={W - R} y1={y(v)} y2={y(v)} stroke={p.track} strokeWidth={1} />
+          <text x={L - 6} y={y(v) + 4} textAnchor="end" fontSize={11} fill={p.muted}>{String(Math.round(v * 100) / 100)}</text>
+        </g>
+      ))}
+      <path d={fillPath} fill={p.color} fillOpacity={0.14} />
+      <path d={line(p.t.past)} fill="none" stroke={p.color} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+      <path d={line(p.t.future)} fill="none" stroke={p.color} strokeWidth={2.5} strokeDasharray="5 5" strokeLinecap="round" />
+      {p.t.doseX.map((f, i) => <line key={i} x1={x(f)} x2={x(f)} y1={y(0) - 7} y2={y(0)} stroke={p.color} strokeWidth={2} strokeLinecap="round" />)}
+      <line x1={nx} x2={nx} y1={ny} y2={y(0)} stroke={p.muted} strokeWidth={1} strokeDasharray="2 3" />
+      <circle cx={nx} cy={ny} r={5} fill={p.color} stroke={p.ink} strokeOpacity={0.5} strokeWidth={1.5} />
+      <text x={Math.min(nx, W - 44)} y={14} textAnchor="middle" fontSize={15} fontWeight={600} fill={p.ink}>{nowPt[1].toFixed(2) + " mg"}</text>
+      <text x={Math.min(nx, W - 44)} y={29} textAnchor="middle" fontSize={11} fill={p.muted}>Now</text>
+      {p.t.ticks.map((tk, i) => <text key={i} x={x(tk[0] as number)} y={H - 8} textAnchor={i === 0 ? "start" : i === p.t.ticks.length - 1 ? "end" : "middle"} fontSize={11} fill={p.muted}>{String(tk[1])}</text>)}
+    </svg>
+  );
+}
+
+// Front-view body map. The person's left is on the right of the picture. Filled dot: last site. Dashed ring: suggested next.
+const SITE_POS: Record<string, [number, number]> = {
+  abdomen_ur: [64, 98], abdomen_ul: [96, 98], abdomen_lr: [64, 116], abdomen_ll: [96, 116],
+  thigh_r: [60, 168], thigh_l: [100, 168], arm_r: [28, 84], arm_l: [132, 84],
+};
+function SiteMap(p: { last: string; next: string; color: string; muted: string; track: string; font: string }) {
+  const body = { fill: "none", stroke: p.muted, strokeOpacity: 0.5, strokeWidth: 1.5 } as const;
+  return (
+    <svg viewBox="0 0 160 220" width="100%" role="img" aria-label={"Last site " + p.last + ", suggested next " + p.next} style={{ fontFamily: p.font, maxWidth: 200 }}>
+      <circle cx={80} cy={26} r={16} {...body} />
+      <rect x={72} y={42} width={16} height={8} rx={4} {...body} />
+      <rect x={46} y={50} width={68} height={86} rx={16} {...body} />
+      <rect x={20} y={56} width={22} height={64} rx={11} {...body} />
+      <rect x={118} y={56} width={22} height={64} rx={11} {...body} />
+      <rect x={48} y={140} width={30} height={72} rx={14} {...body} />
+      <rect x={82} y={140} width={30} height={72} rx={14} {...body} />
+      <text x={10} y={14} fontSize={10} fill={p.muted}>R</text>
+      <text x={144} y={14} fontSize={10} fill={p.muted}>L</text>
+      {Object.keys(SITE_POS).map((k) => <circle key={k} cx={SITE_POS[k][0]} cy={SITE_POS[k][1]} r={2.5} fill={p.muted} fillOpacity={0.5} />)}
+      {SITE_POS[p.last] && <circle cx={SITE_POS[p.last][0]} cy={SITE_POS[p.last][1]} r={7} fill={p.color} />}
+      {SITE_POS[p.next] && <circle cx={SITE_POS[p.next][0]} cy={SITE_POS[p.next][1]} r={9} fill="none" stroke={p.color} strokeWidth={2} strokeDasharray="3 3" />}
+    </svg>
+  );
+}
+
+export default function App() {
+  const theme = useGrokTheme();
+  const [view, setView] = useState("overview");
+  const pal = theme.kind === "dark" ? DATA.pal.dark : DATA.pal.light;
+  const [cRec, cSleep, cNut, cWater, cAct, cMed] = pal;
+  const cWork = cAct; // workouts and steps share the activity hue, as in the images
+  const ink = theme.text.primary;
+  const muted = theme.text.secondary;
+  const track = theme.border.subtle;
+  const font = theme.font.family;
+  const k: Ink = { ink, muted, track, font };
+  const shown = DATA.shown;
+  const open = shown.indexOf(view) >= 0 ? view : "overview"; // a module that is switched off can never be opened
+  const tabs = [{ value: "overview", label: "Overview" }, ...shown.map((m) => ({ value: m, label: TAB[m] || m }))];
+  const col: Record<string, string> = { workouts: cWork, nutrition: cNut, activity: cAct, health: cRec, peptides: cMed };
+
+  const tile = (id: string, children: any) => (
+    <button type="button" onClick={() => setView(id)} aria-label={"Open " + DATA.titles[id]}
+      style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", borderTop: "1px solid " + track, padding: "20px 0", cursor: "pointer", color: ink, fontFamily: font }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 15, fontWeight: 600 }}>
+          <span style={{ width: 10, height: 10, borderRadius: 5, background: col[id], display: "inline-block" }} />{DATA.titles[id]}
+        </span>
+        <span style={{ color: muted, fontSize: 20, lineHeight: "20px" }} aria-hidden="true">{"\u203A"}</span>
+      </div>
+      {children}
+    </button>
+  );
+  const big = (value: string, unit: string, label: string, color?: string) => (
+    <div style={{ fontFamily: font }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+        <span style={{ fontSize: 40, fontWeight: 700, letterSpacing: -1, color: color ?? ink, lineHeight: "42px" }}>{value}</span>
+        {unit && <span style={{ fontSize: 14, color: muted }}>{unit}</span>}
+      </div>
+      <div style={{ fontSize: 13, color: muted, marginTop: 4 }}>{label}</div>
+    </div>
+  );
+  const trio = (items: { label: string; value: string; unit: string; sub: string; frac?: number; color: string }[]) => (
+    <div style={{ display: "flex", gap: 16 }}>
+      {items.map((it) => (
+        <div key={it.label} style={{ flex: 1, minWidth: 0, fontFamily: font }}>
+          <div style={{ fontSize: 13, color: muted }}>{it.label}</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginTop: 2 }}>
+            <span style={{ fontSize: 26, fontWeight: 700, color: ink }}>{it.value}</span><span style={{ fontSize: 13, color: muted }}>{it.unit}</span>
+          </div>
+          {it.frac !== undefined ? (
+            <svg viewBox="0 0 100 4" width="100%" height={4} preserveAspectRatio="none" style={{ display: "block", margin: "6px 0 4px" }} aria-hidden="true">
+              <rect x={0} y={0} width={100} height={4} rx={2} fill={it.color} fillOpacity={0.18} />
+              <rect x={0} y={0} width={Math.min(Math.max(it.frac, 0), 1) * 100} height={4} rx={2} fill={it.color} />
+            </svg>
+          ) : <div style={{ height: 4, margin: "6px 0 4px" }} />}
+          <div style={{ fontSize: 12, color: muted }}>{it.sub}</div>
+        </div>
+      ))}
+    </div>
+  );
+
+  const w = DATA.workouts, n = DATA.nutrition, a = DATA.activity, h = DATA.health, p = DATA.peptides;
+
+  // ---------------------------------------------------------------- overview
+  const overview = (
+    <div>
+      {h && (
+        <Section>
+          <ScoreRing {...k} value={h.recovery.value} state={h.recovery.state} color={cRec} />
+          {h.recovery.coach && <div style={{ textAlign: "center", fontSize: 14, color: ink, fontFamily: font, padding: "4px 8px" }}>{h.recovery.coach}</div>}
+        </Section>
+      )}
+      {w && tile("workouts", <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16 }}>
+            {big(String(w.sessions) + (w.planned ? " of " + w.planned : ""), "", "sessions this week")}
+            <div style={{ width: 190, flex: "none" }}><Dots {...k} days={w.days} color={cWork} check={theme.bg.base} /></div>
+          </div>
+          {w.last && <div style={{ fontSize: 13, color: muted, marginTop: 10 }}>{w.last}</div>}
+        </div>)}
+      {n && tile("nutrition", <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
+            {big(fmt(Math.abs(n.kcalLeft)), "kcal", n.kcalLeft >= 0 ? "left today" : "over today")}
+            <span style={{ fontSize: 26, fontWeight: 700, color: cNut, fontFamily: font }}>{n.rings[0].target > 0 ? Math.round((100 * n.rings[0].value) / n.rings[0].target) + "%" : ""}</span>
+          </div>
+          <div style={{ display: "flex", gap: 16, marginTop: 16 }}>
+            {n.rings.slice(1, 4).map((r) => (
+              <div key={r.key} style={{ flex: 1, minWidth: 0 }}>
+                <Bar {...k} label={r.label} shown={r.shown} sub="" frac={r.target > 0 ? r.value / r.target : 0} color={cNut} />
+              </div>
+            ))}
+          </div>
+        </div>)}
+      {a && tile("activity", <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16 }}>
+            {big(a.steps ? fmt(a.steps) : "\u2013", "steps", a.pct + "% of " + fmt(a.goal))}
+            <div style={{ width: 140, flex: "none" }}><Cols {...k} labels={a.week.labels.map(() => "")} values={a.week.values} color={cAct} h={110} /></div>
+          </div>
+        </div>)}
+      {h && tile("health", <div>
+          {trio([
+            ...(h.sleep && h.sleep.last !== null ? [{ label: "Sleep", value: h.sleep.last.toFixed(1), unit: "h", sub: (h.sleep.pct ?? 0) + "% of goal", frac: (h.sleep.pct ?? 0) / 100, color: cSleep }] : []),
+            ...(h.weight && h.weight.current !== null ? [{ label: "Weight", value: h.weight.current.toFixed(1), unit: h.weight.unit, sub: h.weight.change === null ? "steady" : (h.weight.change < 0 ? "down " : "up ") + Math.abs(h.weight.change).toFixed(1) + " in " + h.weight.labels.length + " days", color: ink }] : []),
+            ...(h.water ? [{ label: "Water", value: h.water.today, unit: h.water.unit, sub: (h.water.pct ?? 0) + "% of goal", frac: (h.water.pct ?? 0) / 100, color: cWater }] : []),
+          ])}
+        </div>)}
+      {p && tile("peptides", <div>
+          {big(p.nextCountdown, "", "Next dose " + p.nextWhen, cMed)}
+          <div style={{ fontSize: 13, color: muted, marginTop: 10 }}>{p.compound + " \u00B7 " + p.lastMg + " " + p.cadence + " \u00B7 " + p.levelNow.toFixed(1) + " mg estimated now"}</div>
+        </div>)}
+    </div>
+  );
+
+  // ----------------------------------------------------------------- details
+  const detail = (id: string) => {
+    if (id === "workouts" && w) return (
+      <div>
+        <Section heading="Sessions this week">
+          {big(String(w.sessions) + (w.planned ? " of " + w.planned : ""), "", w.planned ? "planned this week" : "this week")}
+          <Dots {...k} days={w.days} color={cWork} check={theme.bg.base} big />
+          <Metrics metrics={[
+            { value: fmt(w.minutes) + " min", label: "Minutes" },
+            { value: fmt(w.kcal) + " kcal", label: "Estimated burn" },
+            { value: w.avg + " min", label: "Average session" },
+          ]} />
+        </Section>
+        <Section heading="Minutes per week, last 8 weeks">
+          <Cols {...k} labels={w.weeks.labels} values={w.weeks.values} color={cWork} every={3} />
+        </Section>
+        {w.recent.length > 0 && (
+          <Section heading="Recent sessions">
+            <Properties items={w.recent.map((r) => ({ label: r.when, value: r.name + ", " + r.mins + " min, " + r.kcal + " kcal" }))} />
+          </Section>
+        )}
+      </div>
+    );
+    if (id === "nutrition" && n) return (
+      <div>
+        <Section heading="Calories and macros today">
+          <Rings {...k} rings={n.rings} color={cNut} kcalLeft={n.kcalLeft} />
+          <Metrics metrics={n.rings.slice(1, 4).map((r) => ({ value: r.shown, label: r.label, detail: r.value > r.target ? fmt(r.value - r.target) + " g over" : fmt(Math.max(r.target - r.value, 0)) + " g left" }))} />
+        </Section>
+        {n.meals.length > 0 && (
+          <Section heading="By meal">
+            <Properties items={n.meals.map((m) => ({ label: m.label, value: fmt(m.value) + " kcal" }))} />
+          </Section>
+        )}
+        <Section heading="Calories, last 7 days">
+          <Cols {...k} labels={n.cal7.labels} values={n.cal7.values} color={cNut} ref={n.cal7.target} refLabel={"Target " + fmt(n.cal7.target)} />
+          <Metrics metrics={[
+            { value: n.avgIntake, label: "Average intake" },
+            { value: n.avgProtein, label: "Average protein" },
+            { value: n.proteinDays, label: "Protein days" },
+          ]} />
+        </Section>
+      </div>
+    );
+    if (id === "activity" && a) return (
+      <div>
+        <Section heading="Steps today">
+          {big(a.steps ? fmt(a.steps) : "\u2013", "", a.pct + "% of your " + fmt(a.goal) + " goal")}
+          <Bar {...k} label="Goal" shown="" sub={fmt(a.goal)} frac={a.goal > 0 ? a.steps / a.goal : 0} color={cAct} />
+        </Section>
+        <Section heading="Last 7 days">
+          <Cols {...k} labels={a.week.labels} values={a.week.values} color={cAct} ref={a.goal} refLabel={"Goal " + fmt(a.goal)} />
+          <Metrics metrics={[
+            { value: a.avg30, label: "30-day average" },
+            { value: a.goalDays, label: "Goal days" },
+            { value: a.best, label: "Best day" },
+          ]} />
+        </Section>
+      </div>
+    );
+    if (id === "health" && h) return (
+      <div>
+        <Section>
+          <ScoreRing {...k} value={h.recovery.value} state={h.recovery.state} color={cRec} />
+          {h.recovery.coach && <div style={{ textAlign: "center", fontSize: 14, color: ink, fontFamily: font, padding: "4px 8px" }}>{h.recovery.coach}</div>}
+        </Section>
+        {h.sleep && (
+          <Section heading="Sleep">
+            {big(h.sleep.last !== null ? h.sleep.last.toFixed(1) : "\u2013", "h last night", h.sleep.avg.toFixed(1) + " h average")}
+            <Cols {...k} labels={h.sleep.labels} values={h.sleep.values} color={cSleep} ref={h.sleep.goal} refLabel={"Goal " + h.sleep.goal + " h"} fmtv={(v) => v.toFixed(1)} />
+          </Section>
+        )}
+        {h.weight && h.weight.daily.filter((v) => v !== null).length >= 2 && (
+          <Section heading="Weight, last 28 days">
+            <WeightChart w={h.weight} color={ink} ink={ink} muted={muted} font={font} />
+          </Section>
+        )}
+        {h.water && (
+          <Section heading="Water, last 7 days">
+            {big(h.water.today, h.water.unit + " today", "goal " + h.water.goal + " " + h.water.unit)}
+            <Cols {...k} labels={h.water.labels} values={h.water.values} color={cWater} ref={h.water.goal} refLabel={"Goal " + h.water.goal + " " + h.water.unit} />
+          </Section>
+        )}
+        {PHOTO && (
+          <Section heading={"Progress photos: " + PHOTO.pose}>
+            <img src={PHOTO.src} alt={"Before and after, " + PHOTO.pose + " pose"} style={{ width: "100%", borderRadius: theme.radius.lg, display: "block" }} />
+            <Properties items={[
+              { label: "Before", value: PHOTO.before },
+              { label: "After", value: PHOTO.after },
+              { label: "Days between", value: String(PHOTO.days) },
+              { label: "Weight change", value: PHOTO.weight },
+            ]} />
+          </Section>
+        )}
+      </div>
+    );
+    if (id === "peptides" && p) return (
+      <div>
+        <Section heading={p.compound + (p.brand ? " (" + p.brand + ")" : "")}>
+          <Metrics metrics={[
+            { value: p.levelNow.toFixed(2) + " mg", label: "Estimated level now", detail: "Model estimate, not a blood level" },
+            { value: p.nextCountdown, label: "Next dose", detail: p.nextWhen },
+          ]} />
+          <MedChart t={p} color={cMed} ink={ink} muted={muted} track={track} font={font} />
+          <div style={{ display: "flex", gap: 16, fontSize: 12, color: muted, fontFamily: font }}>
+            <span>Solid: estimated so far</span><span>Dashed: if the schedule is kept</span>
+          </div>
+          <Metrics metrics={[
+            { value: p.levelNext.toFixed(2) + " mg", label: "At next dose" },
+            { value: p.ssHigh.toFixed(1) + " mg", label: "Steady-state high" },
+            { value: p.ssLow.toFixed(1) + " mg", label: "Steady-state low" },
+          ]} />
+          {p.coach && <div style={{ fontSize: 14, color: ink, fontFamily: font, padding: "4px 0" }}>{p.coach}</div>}
+        </Section>
+        <Section heading="Last dose and injection site">
+          <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <Metrics metrics={[{ value: p.lastMg, label: "Last dose", detail: p.lastWhen + ". " + p.lastSite }]} />
+              <div style={{ fontSize: 13, color: muted, fontFamily: font, marginTop: 8 }}>Suggested next site: <span style={{ color: ink }}>{p.nextSite}</span></div>
+            </div>
+            <div style={{ width: 150, flex: "none" }}><SiteMap last={p.lastSiteKey} next={p.nextSiteKey} color={cMed} muted={muted} track={track} font={font} /></div>
+          </div>
+        </Section>
+        {p.effects.length > 0 && (
+          <Section heading="How you feel">
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {p.effects.map((r) => (
+                <Bar key={r.key} {...k} label={r.label} shown={r.shown} sub={r.sub} frac={r.target > 0 ? r.value / r.target : 0} color={cMed} />
+              ))}
+            </div>
+          </Section>
+        )}
+      </div>
+    );
+    return null;
+  };
+
+  return (
+    <Page title={DATA.name + "'s Grok Life"} summary={DATA.dateLabel + ". " + DATA.streak + "-day streak. Updated " + DATA.updated + "."} width="column" palette={pal}>
+      {shown.length > 0 && <Segmented options={tabs} value={open} onChange={setView} />}
+      {open !== "overview" && <div><Button label={"\u2039 Overview"} onClick={() => setView("overview")} /></div>}
+      {open === "overview" ? overview : detail(open)}
+    </Page>
+  );
+}
